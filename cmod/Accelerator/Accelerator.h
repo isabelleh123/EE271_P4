@@ -219,10 +219,37 @@ public:
         while (1) {
 
             //////////////// START IMPLEMENTATION HERE ////////////////
-            // TODO: Your code here 
-            // Note:
-            // 1. dont forget to an a wait(); within the while loop to avoid infinite zero-delay loop, preferably in the count loop
-           
+            // Wait for the next full instruction and split it into its parts: a memory
+            // instruction (for the MainBuffer), a PE instruction (for every PE), a repeat
+            // count, and the amounts by which the memory offsets advance each repetition.
+            spec::Instruction::Instruction inst(inst_in.Pop());
+            spec::Instruction::MemoryInstruction mem_inst = inst.mem_instruction();
+            spec::Instruction::ProcessingElementInstruction pe_inst = inst.pe_instruction();
+
+            // Running memory offsets, starting at the values given in the instruction.
+            NVUINTW(spec::Instruction::MemoryInstructionConfiguration::MEMA_OFFSET_BITWIDTH) mema = mem_inst.mema_offset();
+            NVUINTW(spec::Instruction::MemoryInstructionConfiguration::MEMB_OFFSET_BITWIDTH) memb = mem_inst.memb_offset();
+
+            // The instruction executes count + 1 times (count = 0 means once).
+            for (NVUINTW(spec::Instruction::InstructionConfiguration::COUNT_BITWIDTH + 1) iter = 0; iter <= inst.count(); iter++) {
+                // Same PE instruction for all PEs (SIMD).
+                #pragma hls_unroll yes
+                for (int i = 0; i < spec::N_PE; i++) {
+                    pe_inst_channels[i].Push(pe_inst.packed);
+                }
+
+                // Memory instruction with this repetition's offsets.
+                mem_inst.set_mema_offset(mema);
+                mem_inst.set_memb_offset(memb);
+                buf_inst.Push(mem_inst.packed);
+
+                // Advance the offsets for the next repetition (the increments are 0 or 1).
+                mema += inst.mema_inc();
+                memb += inst.memb_inc();
+
+                wait();   // one cycle per repetition; also prevents a zero-delay loop
+            }
+
             ////////////// END IMPLEMENTATION HERE ////////////////
         }
     }

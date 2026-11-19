@@ -103,13 +103,43 @@ public:
                 spec::Instruction::MemoryInstruction buf_inst(inst_packed);
 
                 //////////////// START IMPLEMENTATION HERE ////////////////
-                // TODO: Your code here 
-                // Note:
-                // 1. You can use spec::NVINTW(width) to define integer with arbitrary bit-width
-                // 2. Work through opcodes for READ, WRITE, and NOP as defined in spec::Instruction::MI
-                // 3. For one set of matrix_data_out, you will need to access buf_inst.mema_offset() * spec::N_PE + i to get the correct data from matrix_mem
-                // 4. For vector_data from vector_mem, one vector_data has to be copied to all vectors in vector_data_out 
-  
+                // Matrix and output memories are organised in rows of N_PE consecutive words:
+                // row `mema_offset` starts at word mema_offset * N_PE, and PE i uses word + i.
+                const NVUINTW(spec::kMemAddrWidth) row_base = buf_inst.mema_offset() * spec::N_PE;
+
+                if (buf_inst.opcode() == spec::Instruction::MI::READ) {
+                    // Vector memory words hold 1 (INT32), 2 (INT16) or 4 (INT8) packed elements.
+                    // memb_offset counts elements, so its low bits select the element inside a word
+                    // and its upper bits select the word.
+                    spec::VectorType vec_word;
+                    if (buf_inst.mode() == spec::Instruction::Mode::opcode(spec::Instruction::Mode::INT8)) {
+                        spec::VectorType w = vector_mem[buf_inst.memb_offset() >> 2];
+                        NVUINTW(8) elem = nvhls::get_slc<8>(w, (buf_inst.memb_offset() & 3) * 8);
+                        vec_word = (elem, elem, elem, elem);      // repeat the byte in all 4 lanes
+                    } else if (buf_inst.mode() == spec::Instruction::Mode::opcode(spec::Instruction::Mode::INT16)) {
+                        spec::VectorType w = vector_mem[buf_inst.memb_offset() >> 1];
+                        NVUINTW(16) elem = nvhls::get_slc<16>(w, (buf_inst.memb_offset() & 1) * 16);
+                        vec_word = (elem, elem);                  // repeat the half-word in both lanes
+                    } else {
+                        vec_word = vector_mem[buf_inst.memb_offset()];
+                    }
+
+                    // Send one matrix word to each PE and broadcast the same vector word to all PEs.
+                    #pragma hls_unroll yes
+                    for (int i = 0; i < spec::N_PE; i++) {
+                        matrix_data_out[i].Push(matrix_mem[row_base + i]);
+                        vector_data_out[i].Push(vec_word);
+                    }
+                } else if (buf_inst.opcode() == spec::Instruction::MI::WRITE) {
+                    // Collect one result from every PE (blocks until its OUT instruction pushes it)
+                    // and store the results as the output row.
+                    #pragma hls_unroll yes
+                    for (int i = 0; i < spec::N_PE; i++) {
+                        output_mem[row_base + i] = output_data_in[i].Pop();
+                    }
+                }
+                // NOP: nothing to do.
+
                 //////////////// END IMPLEMENTATION HERE ////////////////
             }
         }
